@@ -1,5 +1,3 @@
-# streamlit_app.py
-# -*- coding: utf-8 -*-
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
