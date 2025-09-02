@@ -1,5 +1,3 @@
-# streamlit_app.py
-# -*- coding: utf-8 -*-
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -26,6 +24,17 @@ def load_prices(tickers: List[str], start: str) -> pd.DataFrame:
     df = df.sort_index().ffill().dropna(how="all", axis=1)
     return df
 
+@st.cache_data(show_spinner=False)
+def get_long_names(tickers: List[str]) -> dict:
+    names = {}
+    for t in tickers:
+        try:
+            info = yf.Ticker(t).info
+            names[t] = info.get("longName", t)
+        except Exception:
+            names[t] = t
+    return names
+
 def ann_factor(freq: str) -> float:
     return {"D":252, "W":52, "M":12}.get(freq, 252)
 
@@ -37,11 +46,11 @@ def cagr(series: pd.Series, freq: str="D") -> float:
 def to_monthly(df: pd.DataFrame) -> pd.DataFrame:
     return df.resample("M").last()
 
-def reindex_like(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
-    return a.reindex(b.index).ffill()
-
 def safe_div(a, b):
     return a / b if b != 0 else np.nan
+
+def rename_with_long(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    return df.rename(index=mapping, columns=mapping)
 
 # ─────────────────────────────────────────────────────────────
 # Sidebar – Parameter
@@ -83,9 +92,11 @@ base_w = pd.Series({
 })
 
 # ─────────────────────────────────────────────────────────────
-# Daten
+# Daten laden
 # ─────────────────────────────────────────────────────────────
 prices = load_prices(tickers_all, start=start_date.strftime("%Y-%m-%d"))
+long_names = get_long_names(list(prices.columns))
+
 missing = [t for t in base_w.index if t not in prices.columns]
 if missing:
     st.warning(f"Keine Daten für: {', '.join(missing)}")
@@ -113,16 +124,10 @@ signals = pd.DataFrame({
 # ─────────────────────────────────────────────────────────────
 # Dynamische Gewichte pro Tag
 # ─────────────────────────────────────────────────────────────
-targets = ["MCHI","ASHR","COPX","LIT","DBB","XLE","GLD","GDX","EWZ","EWW"]
-targets = [t for t in targets if t in base_w.index]
-signals = signals.loc[rets.index]  # align
-
 def make_weights_row(date) -> pd.Series:
     w = base_w.copy()
     if signals.at[date, "USD_weak"] == 1:
-        # Tilt auf China/Rohstoffe, aus Gold
         add = usd_weak_tilt
-        # Verteilung: 50% China, 50% Rohstoffe
         inc = add/4
         for t in ["MCHI","ASHR","COPX","LIT"]:
             if t in w: w[t] += inc
@@ -130,10 +135,8 @@ def make_weights_row(date) -> pd.Series:
         if "GDX" in w: w["GDX"] = max(0, w["GDX"] - add/2)
 
     if signals.at[date, "HighVol"] == 1:
-        # Risiko runter, Gold hoch
         add_g = gold_over_in_stress
         if "GLD" in w: w["GLD"] += add_g
-        # Lineare Reduktion aus Aktienbuckets
         cut = add_g
         for t in ["MCHI","ASHR","EWZ","EWW","COPX","LIT","DBB","XLE","GDX"]:
             if t in w and cut > 0:
@@ -158,14 +161,13 @@ else:
 
 weights_rb = weights_ts.copy()
 mask = ~weights_rb.index.isin(rb_dates)
-# zwischen Rebalancing: Gewichte konstant halten (keine Drift-Modellierung hier)
 weights_rb[mask] = np.nan
 weights_rb = weights_rb.ffill()
 
 # Portfolio-Return vor Kosten
 port_ret_gross = (rets[weights_rb.columns] * weights_rb.shift()).sum(axis=1)
 
-# Turnover an Rebalancing-Tagen
+# Turnover
 w_prev = weights_rb.shift().fillna(method="bfill").fillna(0)
 turnover = (weights_rb - w_prev).abs().sum(axis=1).where(weights_rb.index.isin(rb_dates), 0.0)
 tc = turnover * (tc_bps/10000.0)
@@ -176,19 +178,12 @@ equity_curve = (1 + port_ret_net.fillna(0)).cumprod()
 # ─────────────────────────────────────────────────────────────
 # Kennzahlen
 # ─────────────────────────────────────────────────────────────
-freq = "D"
-af = ann_factor(freq)
-ann_ret = port_ret_net.mean() * af
-ann_vol = port_ret_net.std() * math.sqrt(af)
+ann_ret = port_ret_net.mean() * ann_factor("D")
+ann_vol = port_ret_net.std() * math.sqrt(252)
 sharpe = safe_div(ann_ret, ann_vol)
 max_dd = (equity_curve / equity_curve.cummax() - 1).min()
 
-# Monats-KPIs
-eq_m = to_monthly(equity_curve)
-ret_m = eq_m.pct_change().dropna()
-hit_rate = (ret_m > 0).mean()
-
-# Contributions (einfach, auf Returns×Gewicht)
+# Contributions
 contrib = (rets[weights_rb.columns] * weights_rb.shift()).sum().sort_values(ascending=False)
 
 # ─────────────────────────────────────────────────────────────
@@ -207,36 +202,18 @@ st.plotly_chart(
     use_container_width=True
 )
 
-# Gewichte zuletzt
+# Aktuelle Gewichte mit Langnamen
 last_w = weights_rb.iloc[-1].sort_values(ascending=False)
 st.subheader("Aktuelle Gewichte")
-st.dataframe((last_w.to_frame("Gewicht")).style.format("{:.2%}"))
+st.dataframe(
+    rename_with_long(last_w.to_frame("Gewicht"), long_names).style.format("{:.2%}")
+)
 
-# Signal-Plot
-sig_fig = go.Figure()
-sig_fig.add_trace(go.Scatter(x=uup.index, y=uup, name="UUP"))
-sig_fig.add_trace(go.Scatter(x=uup_ma_fast.index, y=uup_ma_fast, name=f"MA{ma_fast}"))
-sig_fig.add_trace(go.Scatter(x=uup_ma_slow.index, y=uup_ma_slow, name=f"MA{ma_slow}"))
-sig_fig.update_layout(title="USD-Signal (UUP mit MAs)", yaxis_title="Preis")
-st.plotly_chart(sig_fig, use_container_width=True)
-
-vix_fig = go.Figure()
-vix_fig.add_trace(go.Scatter(x=vixy.index, y=vixy, name="VIXY"))
-vix_fig.add_hline(y=vix_thr, line_dash="dot", annotation_text="Schwelle", annotation_position="top left")
-vix_fig.update_layout(title="Volatilitäts-Signal (VIXY)", yaxis_title="Preis")
-st.plotly_chart(vix_fig, use_container_width=True)
-
-# Contributions
+# Contributions mit Langnamen
 st.subheader("Beitragsanalyse seit Start")
-st.dataframe(contrib.to_frame("Beitrag (Summe)").style.format("{:.4f}"))
-
-# Optional: Komponenten
-if show_components:
-    for t in last_w.index:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=prices.index, y=prices[t], name=t))
-        fig.update_layout(title=f"{t} Preisverlauf", yaxis_title="Preis")
-        st.plotly_chart(fig, use_container_width=True)
+st.dataframe(
+    rename_with_long(contrib.to_frame("Beitrag (Summe)"), long_names).style.format("{:.4f}")
+)
 
 # Downloads
 st.subheader("Downloads")
