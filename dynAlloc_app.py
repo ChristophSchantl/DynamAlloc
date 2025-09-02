@@ -1,3 +1,5 @@
+# streamlit_app.py
+# -*- coding: utf-8 -*-
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -43,9 +45,6 @@ def cagr(series: pd.Series, freq: str="D") -> float:
     years = len(series)/ann_factor(freq)
     return series.iloc[-1]**(1/years)-1
 
-def to_monthly(df: pd.DataFrame) -> pd.DataFrame:
-    return df.resample("M").last()
-
 def safe_div(a, b):
     return a / b if b != 0 else np.nan
 
@@ -64,7 +63,6 @@ vix_thr  = st.sidebar.slider("VIXY Schwelle", 10.0, 40.0, 20.0, step=0.5)
 gold_over_in_stress = st.sidebar.slider("Gold-Übergewicht bei Stress (pp)", 0.0, 0.20, 0.05, step=0.01)
 usd_weak_tilt = st.sidebar.slider("Tilt bei schwachem USD (pp)", 0.0, 0.30, 0.15, step=0.01)
 tc_bps = st.sidebar.slider("Transaktionskosten (bps pro Trade)", 0, 50, 5, step=1)
-show_components = st.sidebar.checkbox("Komponenten-Charts zeigen", value=False)
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Signale aus UUP (USD) und VIXY. Daten via Yahoo Finance.")
@@ -215,15 +213,15 @@ st.dataframe(
     rename_with_long(contrib.to_frame("Beitrag (Summe)"), long_names).style.format("{:.4f}")
 )
 
-# Downloads
-st.subheader("Downloads")
-csv_eq = equity_curve.to_frame("equity").to_csv(index=True).encode()
-st.download_button("Equity-Kurve (CSV)", data=csv_eq, file_name="equity_curve.csv", mime="text/csv")
+# Downloads – EU-Format
+st.subheader("Downloads (EU-Format)")
+csv_eq = equity_curve.to_frame("equity").to_csv(index=True, sep=";", decimal=",").encode("utf-8-sig")
+st.download_button("Equity-Kurve (CSV)", data=csv_eq, file_name="equity_curve_eu.csv", mime="text/csv")
 
-csv_w = weights_rb.to_csv(index=True).encode()
-st.download_button("Gewichte über Zeit (CSV)", data=csv_w, file_name="weights_timeseries.csv", mime="text/csv")
+csv_w = weights_rb.to_csv(index=True, sep=";", decimal=",").encode("utf-8-sig")
+st.download_button("Gewichte über Zeit (CSV)", data=csv_w, file_name="weights_timeseries_eu.csv", mime="text/csv")
 
-csv_ret = port_ret_net.to_frame("ret").to_csv(index=True).encode()
-st.download_button("Tägliche Returns (CSV)", data=csv_ret, file_name="daily_returns.csv", mime="text/csv")
+csv_ret = port_ret_net.to_frame("ret").to_csv(index=True, sep=";", decimal=",").encode("utf-8-sig")
+st.download_button("Tägliche Returns (CSV)", data=csv_ret, file_name="daily_returns_eu.csv", mime="text/csv")
 
-st.caption("Hinweis: UUP/VIXY sind US-gelistete ETFs. Verfügbarkeit und Historie können variieren.")
+st.caption("Hinweis: CSV-Exports sind im EU-Format (Semikolon, Komma als Dezimal). UUP/VIXY sind US-ETFs.")
